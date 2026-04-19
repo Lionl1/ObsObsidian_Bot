@@ -1,0 +1,29 @@
+name: telegram-obsidian-bot
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram-obsidian-bot
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_USER_ID: ${TELEGRAM_USER_ID}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-local}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-120}
+      OBSIDIAN_VAULT_PATH: ${CONTAINER_OBSIDIAN_PATH}
+      HOST_OBSIDIAN_PATH: ${HOST_OBSIDIAN_PATH}
+      CONTAINER_OBSIDIAN_PATH: ${CONTAINER_OBSIDIAN_PATH}
+      HISTORY_LIMIT: ${HISTORY_LIMIT:-18}
+      ARTICLE_TEXT_LIMIT: ${ARTICLE_TEXT_LIMIT:-15000}
+      OBSIDIAN_PROMPT_NOTES_LIMIT: ${OBSIDIAN_PROMPT_NOTES_LIMIT:-100}
+      OBSIDIAN_NOTE_CONTENT_LIMIT: ${OBSIDIAN_NOTE_CONTENT_LIMIT:-12000}
+    volumes:
+      - .:/app
+      - ${HOST_OBSIDIAN_PATH}:${CONTAINER_OBSIDIAN_PATH}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    user: "${UID}:${GID}"
+    restart: unless-stopped

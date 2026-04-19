@@ -1,0 +1,19 @@
+# Environments
+.env
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Package managers
+uv.cache/
+
+# IDEs and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local vault data
+vault/
