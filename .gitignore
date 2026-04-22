@@ -1,11 +1,13 @@
 # Environments
 .env
 .venv/
+backend/.venv/
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
 # Package managers
 uv.cache/

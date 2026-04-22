@@ -3,7 +3,7 @@ name: telegram-obsidian-bot
 services:
   bot:
     build:
-      context: .
+      context: ./backend
       dockerfile: Dockerfile
     container_name: telegram-obsidian-bot
     environment:
@@ -18,10 +18,12 @@ services:
       CONTAINER_OBSIDIAN_PATH: ${CONTAINER_OBSIDIAN_PATH}
       HISTORY_LIMIT: ${HISTORY_LIMIT:-18}
       ARTICLE_TEXT_LIMIT: ${ARTICLE_TEXT_LIMIT:-15000}
+      ATTACHMENT_TEXT_LIMIT: ${ATTACHMENT_TEXT_LIMIT:-15000}
+      TELEGRAM_FILE_MAX_SIZE: ${TELEGRAM_FILE_MAX_SIZE:-10485760}
+      URL_EXTRACT_LIMIT: ${URL_EXTRACT_LIMIT:-3}
       OBSIDIAN_PROMPT_NOTES_LIMIT: ${OBSIDIAN_PROMPT_NOTES_LIMIT:-100}
       OBSIDIAN_NOTE_CONTENT_LIMIT: ${OBSIDIAN_NOTE_CONTENT_LIMIT:-12000}
     volumes:
-      - .:/app
       - ${HOST_OBSIDIAN_PATH}:${CONTAINER_OBSIDIAN_PATH}
     extra_hosts:
       - "host.docker.internal:host-gateway"

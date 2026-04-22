@@ -1,66 +1,58 @@
 # Telegram Obsidian Bot
 
-Приватный Telegram-бот для сбора материалов и генерации заметок в Obsidian через локальную LLM с OpenAI-совместимым API.
+Private Telegram bot for collecting source materials and turning them into Obsidian notes through an OpenAI-compatible LLM endpoint.
 
-Бот умеет принимать обычные сообщения, пересланные сообщения, ссылки и файлы, собирать их в единый контекст, учитывать уже существующие заметки в vault и сохранять итоговый результат обратно в Obsidian.
+The bot accepts regular messages, forwarded messages, links, and files, merges them into a single context, looks up existing notes in your vault, and saves generated Markdown notes back to Obsidian.
 
-## Что умеет
+## Features
 
-- Поддерживает conversational memory для одного пользователя
-- Очищает историю по команде `/clear`
-- Извлекает текст статей по URL через `trafilatura`
-- Обрабатывает несколько ссылок в одном сообщении
-- Читает существующие `.md`-заметки из Obsidian vault
-- Передает в LLM список существующих заметок и тегов
-- Поддерживает запросы вида `Прочитай заметку [Название]`
-- Использует текст, подпись, ссылки и файлы из пересланного сообщения
-- Извлекает текст из `txt`, `md`, `json`, `yaml`, `xml`, `csv`, `html`, `docx`
-- Для нетекстовых вложений добавляет в контекст метаданные
-- Автоматически сохраняет или обновляет markdown-заметки в vault
-- Работает локально и в Docker
+- Private single-user access control
+- In-memory conversation history with `/clear`
+- Article extraction from URLs via `trafilatura`
+- Multiple links per message
+- Existing note and tag indexing from the Obsidian vault
+- Existing note lookup with commands like `read note [My Note]`
+- Attachment parsing for `txt`, `md`, `json`, `yaml`, `xml`, `csv`, `html`, and `docx`
+- Metadata-only handling for unsupported binary attachments
+- Automatic note save or update in the vault
+- Local and Docker-based execution
 
-## Как это работает
-
-1. Пользователь отправляет сообщение, ссылку, пересланный материал или файл.
-2. Бот извлекает текст из доступных источников.
-3. Перед генерацией бот индексирует Obsidian vault и собирает список заметок и тегов.
-4. В LLM передается история диалога, системный промпт, материалы пользователя и контекст существующих заметок.
-5. Если модель возвращает markdown-заметку, бот сохраняет ее в `OBSIDIAN_VAULT_PATH`.
-
-## Стек
-
-- Python 3.11+
-- `uv`
-- `aiogram 3.x`
-- `trafilatura`
-- `openai`
-- `pydantic-settings`
-
-## Структура проекта
+## Project Structure
 
 ```text
 .
-├── bot.py
-├── config.py
-├── main.py
-├── services.py
-├── Dockerfile
+├── backend/
+│   ├── bot.py
+│   ├── config.py
+│   ├── main.py
+│   ├── services.py
+│   ├── tests/
+│   ├── Dockerfile
+│   ├── pyproject.toml
+│   └── uv.lock
 ├── docker-compose.yml
 ├── Makefile
-├── pyproject.toml
-├── uv.lock
-└── .env.example
+├── .env.example
+└── LICENSE
 ```
 
-## Быстрый старт
+## Requirements
 
-### 1. Подготовка `.env`
+- Python 3.11+
+- `uv`
+- Telegram bot token
+- OpenAI-compatible API endpoint
+- Obsidian vault path
+
+## Quick Start
+
+### 1. Create the environment file
 
 ```bash
 cp .env.example .env
 ```
 
-Минимально нужно заполнить:
+Fill in at least:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_USER_ID`
@@ -68,30 +60,30 @@ cp .env.example .env
 - `OPENAI_MODEL`
 - `OBSIDIAN_VAULT_PATH`
 
-### 2. Локальный запуск
+### 2. Run locally
 
-Для локального сервера LLM обычно используют:
+Typical local LLM configuration:
 
 ```env
 OPENAI_BASE_URL=http://127.0.0.1:8000/v1
 ```
 
-Запуск:
+Commands:
 
 ```bash
 make sync
 make run
 ```
 
-Dev-режим:
+Development mode:
 
 ```bash
 make dev
 ```
 
-### 3. Запуск в Docker
+### 3. Run with Docker
 
-Для Docker обычно нужны такие значения:
+Typical Docker configuration:
 
 ```env
 OPENAI_BASE_URL=http://host.docker.internal:8000/v1
@@ -101,12 +93,12 @@ UID=501
 GID=20
 ```
 
-Важно:
+Important:
 
-- `HOST_OBSIDIAN_PATH` должен быть реальным путем на хосте, а не placeholder из `.env.example`
-- на macOS этот путь должен быть доступен в `Docker Desktop -> Settings -> Resources -> File Sharing`
+- `HOST_OBSIDIAN_PATH` must point to a real host directory.
+- On macOS, the path must be shared in Docker Desktop file sharing settings.
 
-Запуск:
+Commands:
 
 ```bash
 make docker-config
@@ -115,33 +107,51 @@ make docker-up
 make docker-logs
 ```
 
-Остановка:
+Stop the stack:
 
 ```bash
 make docker-down
 ```
 
-## Переменные окружения
+## Environment Variables
 
-| Переменная | Назначение |
+| Variable | Purpose |
 | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | токен Telegram-бота |
-| `TELEGRAM_USER_ID` | Telegram user id владельца, бот приватный |
-| `OPENAI_API_KEY` | ключ для OpenAI-совместимого API |
-| `OPENAI_BASE_URL` | URL локального LLM API |
-| `OPENAI_MODEL` | имя модели |
-| `OBSIDIAN_VAULT_PATH` | путь к vault для локального запуска |
-| `HOST_OBSIDIAN_PATH` | путь к vault на хосте для Docker |
-| `CONTAINER_OBSIDIAN_PATH` | путь к vault внутри контейнера |
-| `HISTORY_LIMIT` | длина истории диалога |
-| `ARTICLE_TEXT_LIMIT` | лимит текста статьи |
-| `ATTACHMENT_TEXT_LIMIT` | лимит текста вложения |
-| `TELEGRAM_FILE_MAX_SIZE` | максимальный размер загружаемого файла |
-| `URL_EXTRACT_LIMIT` | сколько ссылок из одного сообщения обрабатывать |
-| `OBSIDIAN_PROMPT_NOTES_LIMIT` | сколько заметок из vault передавать в промпт |
-| `OBSIDIAN_NOTE_CONTENT_LIMIT` | лимит текста при чтении существующей заметки |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
+| `TELEGRAM_USER_ID` | Owner user ID, the bot is private |
+| `OPENAI_API_KEY` | API key for an OpenAI-compatible endpoint |
+| `OPENAI_BASE_URL` | Base URL for the LLM API |
+| `OPENAI_MODEL` | Model name |
+| `OBSIDIAN_VAULT_PATH` | Vault path for local runs |
+| `HOST_OBSIDIAN_PATH` | Host vault path for Docker |
+| `CONTAINER_OBSIDIAN_PATH` | Vault path inside the container |
+| `HISTORY_LIMIT` | Number of history messages kept in memory |
+| `ARTICLE_TEXT_LIMIT` | Maximum extracted article size |
+| `ATTACHMENT_TEXT_LIMIT` | Maximum extracted attachment size |
+| `TELEGRAM_FILE_MAX_SIZE` | Maximum downloadable Telegram file size in bytes |
+| `URL_EXTRACT_LIMIT` | Maximum number of URLs processed from one message |
+| `OBSIDIAN_PROMPT_NOTES_LIMIT` | Maximum number of indexed notes included in the prompt |
+| `OBSIDIAN_NOTE_CONTENT_LIMIT` | Maximum content length when loading an existing note |
 
-## Команды
+## Supported Inputs
+
+- Plain text requests
+- One or more links in a single message
+- Forwarded messages with text or captions
+- Existing note lookup requests such as `read note [Architecture]`
+- Documents attached to messages
+- Mixed forwarded posts containing text, links, and files
+
+If an attachment format is not supported for text extraction, the bot passes only attachment metadata to the model.
+
+## Development Notes
+
+- Runtime code lives only in `backend/`.
+- The repository intentionally keeps vault data and local virtual environments out of version control.
+- Conversation memory is process-local and is reset after restart.
+- If the model returns a valid Markdown note with frontmatter and a top-level heading, the bot saves it automatically.
+
+## Useful Commands
 
 ```bash
 make sync
@@ -153,17 +163,3 @@ make docker-up
 make docker-down
 make docker-logs
 ```
-
-## Поддерживаемые входные данные
-
-Бот уже сейчас корректно работает с такими сценариями:
-
-- обычный текстовый запрос
-- одна или несколько ссылок в одном сообщении
-- пересланное сообщение с текстом или подписью
-- запрос `Прочитай заметку [Название]`
-- документ, приложенный к сообщению
-- пересланный пост с текстом, ссылками и файлом одновременно
-
-Если вложение нетекстовое, бот не пытается выдумывать содержимое, а передает в LLM только метаданные о файле.
-

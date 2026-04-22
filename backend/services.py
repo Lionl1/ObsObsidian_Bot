@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import difflib
+import io
+import json
 import re
 import unicodedata
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime
+from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,11 +25,32 @@ if TYPE_CHECKING:
 HistoryEntry = dict[str, str]
 
 URL_PATTERN = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
-CODE_BLOCK_PATTERN = re.compile(r"```(?:markdown|md)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*", re.DOTALL)
 HEADING_PATTERN = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
-BRACKET_NOTE_READ_PATTERN = re.compile(r"прочитай\s+заметку\s+\[([^\]]+)\]", re.IGNORECASE)
-PLAIN_NOTE_READ_PATTERN = re.compile(r"^\s*прочитай\s+заметку\s+(.+?)\s*$", re.IGNORECASE | re.DOTALL)
+BRACKET_NOTE_READ_PATTERN = re.compile(
+    r"(?:read\s+note|прочитай\s+заметку)\s+\[([^\]]+)\]",
+    re.IGNORECASE,
+)
+PLAIN_NOTE_READ_PATTERN = re.compile(
+    r"^\s*(?:read\s+note|прочитай\s+заметку)\s+(.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+NOTE_BLOCK_OPEN_PATTERN = re.compile(r"^\s*```(?:markdown|md)?\s*$", re.IGNORECASE)
+NOTE_BLOCK_CLOSE_PATTERN = re.compile(r"^\s*```\s*$")
+HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+SUPPORTED_TEXT_SUFFIXES = {
+    ".txt",
+    ".md",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".csv",
+    ".html",
+    ".htm",
+    ".docx",
+}
+WORD_NAMESPACE = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 
 class ArticleExtractionError(Exception):
@@ -88,7 +115,7 @@ def build_openai_client(settings: Settings) -> AsyncOpenAI:
 
 
 async def prepare_user_message(text: str, settings: Settings) -> tuple[str, str | None]:
-    urls = extract_urls(text)
+    urls = extract_urls(text)[: settings.url_extract_limit]
     if not urls:
         return text.strip(), None
 
@@ -97,18 +124,18 @@ async def prepare_user_message(text: str, settings: Settings) -> tuple[str, str 
     if len(article_text) > settings.article_text_limit:
         article_text = (
             article_text[: settings.article_text_limit].rstrip()
-            + "\n\n[Текст статьи был обрезан из-за ограничения контекста.]"
+            + "\n\n[The article text was truncated because of the context limit.]"
         )
 
     all_urls_text = "\n".join(f"- {u}" for u in urls)
     prompt = (
-        f"Пользователь прислал ссылки:\n{all_urls_text}\n\n"
-        f"Содержимое основной статьи ({primary_url}):\n\n{article_text}\n\nПроанализируй её и сделай заметку."
+        f"The user sent these URLs:\n{all_urls_text}\n\n"
+        f"Primary article content ({primary_url}):\n\n{article_text}\n\nAnalyze it and create a note."
     )
 
     additional_context = URL_PATTERN.sub("", text).strip()
     if additional_context:
-        prompt += f"\n\nДополнительный комментарий пользователя: {additional_context}"
+        prompt += f"\n\nAdditional user comment: {additional_context}"
 
     return prompt, primary_url
 
@@ -116,7 +143,7 @@ async def prepare_user_message(text: str, settings: Settings) -> tuple[str, str 
 async def extract_article_text(url: str) -> str:
     downloaded = await asyncio.to_thread(trafilatura.fetch_url, url)
     if not downloaded:
-        raise ArticleExtractionError("Не удалось скачать страницу по указанному URL.")
+        raise ArticleExtractionError("Failed to download the page from the provided URL.")
 
     extracted = await asyncio.to_thread(
         trafilatura.extract,
@@ -126,11 +153,11 @@ async def extract_article_text(url: str) -> str:
         favor_precision=True,
     )
     if not extracted:
-        raise ArticleExtractionError("Не удалось извлечь текст статьи.")
+        raise ArticleExtractionError("Failed to extract article text.")
 
     cleaned = extracted.strip()
     if not cleaned:
-        raise ArticleExtractionError("Текст статьи пустой после обработки.")
+        raise ArticleExtractionError("The extracted article text is empty.")
 
     return cleaned
 
@@ -151,32 +178,22 @@ async def generate_llm_reply(
             model=settings.openai_model,
             messages=messages,
             temperature=0.2,
+            max_tokens=4000,
         )
     except Exception as exc:  # noqa: BLE001
-        raise LLMServiceError(f"Ошибка при обращении к LLM: {exc}") from exc
+        raise LLMServiceError(f"Error while calling the LLM: {exc}") from exc
 
     content = response.choices[0].message.content if response.choices else None
     if not content:
-        raise LLMServiceError("LLM вернула пустой ответ.")
+        raise LLMServiceError("The LLM returned an empty response.")
 
     return content.strip()
 
 
 def extract_note_from_response(response_text: str) -> NotePayload | None:
-    candidates: list[str] = []
-    for match in CODE_BLOCK_PATTERN.finditer(response_text):
-        candidate = match.group(1).strip()
-        if candidate.startswith("---") or HEADING_PATTERN.search(candidate):
-            candidates.append(candidate)
-
-    if candidates:
-        note_content = candidates[0]
-    else:
-        raw = response_text.strip()
-        if FRONTMATTER_PATTERN.match(raw):
-            note_content = raw
-        else:
-            return None
+    note_content = _extract_note_content(response_text)
+    if note_content is None:
+        return None
 
     title_match = HEADING_PATTERN.search(note_content)
     if not title_match:
@@ -187,6 +204,50 @@ def extract_note_from_response(response_text: str) -> NotePayload | None:
         return None
 
     return NotePayload(title=title, content=note_content.strip() + "\n")
+
+
+def _extract_note_content(response_text: str) -> str | None:
+    raw = response_text.strip()
+    if not raw:
+        return None
+
+    fenced_candidate = _extract_fenced_note_candidate(raw)
+    if fenced_candidate is not None:
+        return fenced_candidate
+
+    if FRONTMATTER_PATTERN.match(raw) or HEADING_PATTERN.search(raw):
+        return raw
+
+    frontmatter_match = FRONTMATTER_PATTERN.search(raw)
+    if frontmatter_match:
+        return raw[frontmatter_match.start() :].strip()
+
+    heading_match = HEADING_PATTERN.search(raw)
+    if heading_match:
+        return raw[heading_match.start() :].strip()
+
+    return None
+
+
+def _extract_fenced_note_candidate(text: str) -> str | None:
+    lines = text.splitlines()
+    openers = [index for index, line in enumerate(lines) if NOTE_BLOCK_OPEN_PATTERN.match(line)]
+    closers = [index for index, line in enumerate(lines) if NOTE_BLOCK_CLOSE_PATTERN.match(line)]
+    candidates: list[str] = []
+
+    for opener_index in openers:
+        for closer_index in reversed(closers):
+            if closer_index <= opener_index:
+                continue
+            inner = "\n".join(lines[opener_index + 1 : closer_index]).strip()
+            if FRONTMATTER_PATTERN.match(inner) or HEADING_PATTERN.search(inner):
+                candidates.append(inner)
+                break
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=len)
 
 
 def make_safe_filename(title: str) -> str:
@@ -211,6 +272,133 @@ async def save_note(note: NotePayload, vault_path: Path) -> SaveResult:
         return SaveResult(filename=filename, title=note.title, updated=updated)
 
     return await asyncio.to_thread(_write_note)
+
+
+def build_attachment_prompt(
+    filename: str,
+    mime_type: str | None,
+    text: str | None,
+    settings: Settings,
+) -> str:
+    metadata = [f"Filename: {filename}"]
+    if mime_type:
+        metadata.append(f"MIME type: {mime_type}")
+
+    if text:
+        trimmed = text.strip()
+        if len(trimmed) > settings.attachment_text_limit:
+            trimmed = (
+                trimmed[: settings.attachment_text_limit].rstrip()
+                + "\n\n[The attachment text was truncated because of the context limit.]"
+            )
+        metadata_text = "\n".join(metadata)
+        return f"{metadata_text}\n\nExtracted attachment text:\n\n{trimmed}"
+
+    metadata_text = "\n".join(metadata)
+    return (
+        f"{metadata_text}\n\n"
+        "The file content was not extracted automatically. Use only the attachment metadata."
+    )
+
+
+def extract_attachment_text(
+    filename: str | None,
+    content: bytes,
+    mime_type: str | None = None,
+) -> str | None:
+    suffix = Path(filename or "").suffix.casefold()
+    if suffix not in SUPPORTED_TEXT_SUFFIXES:
+        return None
+
+    if suffix == ".docx":
+        return _extract_docx_text(content)
+
+    decoded = _decode_attachment_bytes(content)
+    if not decoded:
+        return None
+
+    if suffix in {".html", ".htm"}:
+        extracted = trafilatura.extract(
+            decoded,
+            include_links=False,
+            include_images=False,
+            favor_precision=True,
+        )
+        if extracted:
+            return extracted.strip()
+        return _strip_html(decoded)
+
+    if suffix == ".csv":
+        return _render_csv(decoded)
+
+    if suffix == ".json":
+        return _pretty_json(decoded)
+
+    if suffix == ".xml":
+        return _extract_xml_text(decoded)
+
+    return decoded.strip()
+
+
+def _decode_attachment_bytes(content: bytes) -> str | None:
+    for encoding in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
+def _extract_docx_text(content: bytes) -> str | None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            document_xml = archive.read("word/document.xml")
+    except (KeyError, zipfile.BadZipFile):
+        return None
+
+    try:
+        root = ET.fromstring(document_xml)
+    except ET.ParseError:
+        return None
+
+    paragraphs: list[str] = []
+    for paragraph in root.findall(".//w:p", WORD_NAMESPACE):
+        parts = [node.text for node in paragraph.findall(".//w:t", WORD_NAMESPACE) if node.text]
+        if parts:
+            paragraphs.append("".join(parts))
+
+    return "\n".join(paragraphs).strip() or None
+
+
+def _render_csv(decoded: str) -> str:
+    reader = csv.reader(io.StringIO(decoded))
+    rows = ["\t".join(cell.strip() for cell in row) for row in reader]
+    return "\n".join(row for row in rows if row).strip()
+
+
+def _pretty_json(decoded: str) -> str:
+    try:
+        payload = json.loads(decoded)
+    except json.JSONDecodeError:
+        return decoded.strip()
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _extract_xml_text(decoded: str) -> str:
+    try:
+        root = ET.fromstring(decoded)
+    except ET.ParseError:
+        return decoded.strip()
+
+    parts = [fragment.strip() for fragment in root.itertext() if fragment and fragment.strip()]
+    return "\n".join(parts).strip()
+
+
+def _strip_html(decoded: str) -> str:
+    text = HTML_TAG_PATTERN.sub(" ", decoded)
+    text = unescape(text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 def extract_frontmatter(text: str) -> str | None:
@@ -317,31 +505,31 @@ def _scan_obsidian_vault(vault_path: Path) -> VaultIndex:
 def render_vault_index_for_prompt(vault_index: VaultIndex | None, settings: Settings) -> str:
     if vault_index is None or not vault_index.notes:
         return (
-            "В хранилище Obsidian пока нет известных заметок. "
-            "Если создаешь новую заметку, подбери разумные теги и структуру."
+            "There are no known Obsidian notes in the vault yet. "
+            "If you create a new note, choose sensible tags and structure."
         )
 
     limited_notes = vault_index.notes[: settings.obsidian_prompt_notes_limit]
     lines = [
-        "Ниже список существующих заметок в хранилище. "
-        "Опирайся на эти существующие теги и старайся делать перекрестные ссылки "
-        "[[Название существующей заметки]] в генерируемом тексте, если темы пересекаются.",
-        "Существующие заметки:",
+        "Below is the list of existing notes in the vault. "
+        "Use these tags where relevant and prefer cross-links "
+        "[[Existing Note Title]] when topics overlap.",
+        "Existing notes:",
     ]
 
     for note in limited_notes:
-        tags_text = ", ".join(note.tags) if note.tags else "без тегов"
+        tags_text = ", ".join(note.tags) if note.tags else "no tags"
         heading_text = f"; heading: {note.heading}" if note.heading and note.heading != note.link_name else ""
         lines.append(
             f"- [[{note.link_name}]]; file: {note.relative_path}; tags: {tags_text}{heading_text}"
         )
 
     if vault_index.tags:
-        lines.append(f"Доступные теги: {', '.join(vault_index.tags)}")
+        lines.append(f"Available tags: {', '.join(vault_index.tags)}")
 
     if len(vault_index.notes) > len(limited_notes):
         omitted = len(vault_index.notes) - len(limited_notes)
-        lines.append(f"Дополнительно скрыто заметок из-за лимита промпта: {omitted}.")
+        lines.append(f"Additional notes hidden because of the prompt limit: {omitted}.")
 
     return "\n".join(lines)
 
@@ -396,7 +584,7 @@ async def read_note_content(note: VaultNote, settings: Settings) -> str:
     if len(content) > settings.obsidian_note_content_limit:
         content = (
             content[: settings.obsidian_note_content_limit].rstrip()
-            + "\n\n[Содержимое заметки было обрезано из-за ограничения контекста.]"
+            + "\n\n[The note content was truncated because of the context limit.]"
         )
     return content
 
@@ -416,17 +604,17 @@ async def prepare_existing_note_context(
         if suggestions:
             suggestions_text = ", ".join(suggestions)
             raise NoteLookupError(
-                f"Не нашел заметку '{note_query}'. Ближайшие варианты: {suggestions_text}."
+                f"Could not find note '{note_query}'. Closest matches: {suggestions_text}."
             )
-        raise NoteLookupError(f"Не нашел заметку '{note_query}' в папке Obsidian.")
+        raise NoteLookupError(f"Could not find note '{note_query}' in the Obsidian vault.")
 
     note_content = await read_note_content(note, settings)
-    tags_text = ", ".join(note.tags) if note.tags else "нет"
+    tags_text = ", ".join(note.tags) if note.tags else "none"
     prompt = (
-        f"Пользователь попросил прочитать существующую заметку '{note.link_name}'.\n"
-        f"Файл: {note.relative_path}\n"
-        f"Теги: {tags_text}\n\n"
-        f"Содержимое заметки:\n\n{note_content}\n\n"
-        f"Исходный запрос пользователя: {text}"
+        f"The user asked to read the existing note '{note.link_name}'.\n"
+        f"File: {note.relative_path}\n"
+        f"Tags: {tags_text}\n\n"
+        f"Note content:\n\n{note_content}\n\n"
+        f"Original user request: {text}"
     )
     return prompt, note

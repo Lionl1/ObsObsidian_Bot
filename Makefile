@@ -20,13 +20,13 @@ check-docker-env: check-env
 	fi
 
 sync:
-	uv sync
+	cd backend && uv sync
 
 run:
-	uv run python main.py
+	cd backend && uv run python main.py
 
 dev:
-	uv run python -X dev main.py
+	cd backend && uv run python -X dev main.py
 
 docker-config: check-docker-env
 	docker compose --env-file $(ENV_FILE) config
