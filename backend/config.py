@@ -33,6 +33,7 @@ Automatically choose 3 to 5 relevant YAML tags. Prefer tags from the provided "A
 If an architecture diagram is useful, add a Mermaid block inside the "Architecture" section.
 If the user is only asking a question about the article, the existing context, or a clarification request without asking for a note, answer normally and do not force the response into note format.
 Use the existing notes and tags from the vault when relevant. Prefer cross-links such as [[Existing Note Title]] when topics overlap.
+Always write the note in the same language as the user's current message unless the user explicitly asks for translation into another language.
 """
 
 

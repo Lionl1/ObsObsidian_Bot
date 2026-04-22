@@ -4,7 +4,15 @@ import io
 import unittest
 import zipfile
 
-from services import extract_attachment_text, extract_note_from_response
+from types import SimpleNamespace
+
+from services import (
+    build_language_instruction,
+    detect_message_language,
+    extract_attachment_text,
+    extract_note_from_response,
+    prepare_user_message,
+)
 
 
 class ExtractNoteFromResponseTests(unittest.TestCase):
@@ -79,6 +87,39 @@ class ExtractAttachmentTextTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "First line\nSecond line")
+
+
+class LanguagePromptTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prepare_user_message_adds_russian_language_instruction(self) -> None:
+        settings = SimpleNamespace(url_extract_limit=3)
+
+        prompt, primary_url = await prepare_user_message("Сделай заметку по этому тексту", settings)
+
+        self.assertIsNone(primary_url)
+        self.assertIn("The detected message language is Russian.", prompt)
+        self.assertIn("User message:\nСделай заметку по этому тексту", prompt)
+
+    async def test_prepare_user_message_adds_english_language_instruction(self) -> None:
+        settings = SimpleNamespace(url_extract_limit=3)
+
+        prompt, primary_url = await prepare_user_message("Create a note from this message", settings)
+
+        self.assertIsNone(primary_url)
+        self.assertIn("The detected message language is English.", prompt)
+        self.assertIn("User message:\nCreate a note from this message", prompt)
+
+
+class DetectMessageLanguageTests(unittest.TestCase):
+    def test_detects_russian_text(self) -> None:
+        self.assertEqual(detect_message_language("Привет, сделай заметку"), "Russian")
+
+    def test_detects_english_text(self) -> None:
+        self.assertEqual(detect_message_language("Hello, create a note"), "English")
+
+    def test_build_language_instruction_for_unknown_text(self) -> None:
+        instruction = build_language_instruction("12345 --- 67890")
+
+        self.assertIn("If the message language is unclear", instruction)
 
 
 if __name__ == "__main__":

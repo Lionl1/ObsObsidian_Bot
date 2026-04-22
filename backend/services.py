@@ -51,6 +51,8 @@ SUPPORTED_TEXT_SUFFIXES = {
     ".docx",
 }
 WORD_NAMESPACE = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+CYRILLIC_CHAR_PATTERN = re.compile(r"[А-Яа-яЁё]")
+LATIN_CHAR_PATTERN = re.compile(r"[A-Za-z]")
 
 
 class ArticleExtractionError(Exception):
@@ -99,6 +101,33 @@ def extract_urls(text: str) -> list[str]:
     return [match.rstrip(".,!?)]}>") for match in matches]
 
 
+def detect_message_language(text: str) -> str | None:
+    cyrillic_count = len(CYRILLIC_CHAR_PATTERN.findall(text))
+    latin_count = len(LATIN_CHAR_PATTERN.findall(text))
+
+    if cyrillic_count == 0 and latin_count == 0:
+        return None
+    if cyrillic_count > latin_count:
+        return "Russian"
+    if latin_count > cyrillic_count:
+        return "English"
+    return None
+
+
+def build_language_instruction(text: str) -> str:
+    language = detect_message_language(text)
+    if language is None:
+        return (
+            "Write the response in the same language as the user's current message. "
+            "If the message language is unclear, keep the response language consistent with the user's wording."
+        )
+
+    return (
+        "Write the response in the same language as the user's current message. "
+        f"The detected message language is {language}."
+    )
+
+
 def build_system_prompt(settings: Settings, vault_index: VaultIndex | None = None) -> str:
     today = datetime.now().date().isoformat()
     prompt = settings.system_prompt_template.format(today=today)
@@ -115,9 +144,12 @@ def build_openai_client(settings: Settings) -> AsyncOpenAI:
 
 
 async def prepare_user_message(text: str, settings: Settings) -> tuple[str, str | None]:
+    language_instruction = build_language_instruction(text)
     urls = extract_urls(text)[: settings.url_extract_limit]
     if not urls:
-        return text.strip(), None
+        if not text.strip():
+            return "", None
+        return f"{language_instruction}\n\nUser message:\n{text.strip()}", None
 
     primary_url = urls[0]
     article_text = await extract_article_text(primary_url)
@@ -129,6 +161,7 @@ async def prepare_user_message(text: str, settings: Settings) -> tuple[str, str 
 
     all_urls_text = "\n".join(f"- {u}" for u in urls)
     prompt = (
+        f"{language_instruction}\n\n"
         f"The user sent these URLs:\n{all_urls_text}\n\n"
         f"Primary article content ({primary_url}):\n\n{article_text}\n\nAnalyze it and create a note."
     )
@@ -611,6 +644,7 @@ async def prepare_existing_note_context(
     note_content = await read_note_content(note, settings)
     tags_text = ", ".join(note.tags) if note.tags else "none"
     prompt = (
+        f"{build_language_instruction(text)}\n\n"
         f"The user asked to read the existing note '{note.link_name}'.\n"
         f"File: {note.relative_path}\n"
         f"Tags: {tags_text}\n\n"
