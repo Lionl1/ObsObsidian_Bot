@@ -7,6 +7,7 @@ import io
 import json
 import re
 import unicodedata
+import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
@@ -49,6 +50,7 @@ SUPPORTED_TEXT_SUFFIXES = {
     ".html",
     ".htm",
     ".docx",
+    ".pdf",
 }
 WORD_NAMESPACE = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 CYRILLIC_CHAR_PATTERN = re.compile(r"[А-Яа-яЁё]")
@@ -130,7 +132,27 @@ def build_language_instruction(text: str) -> str:
 
 def build_system_prompt(settings: Settings, vault_index: VaultIndex | None = None) -> str:
     today = datetime.now().date().isoformat()
-    prompt = settings.system_prompt_template.format(today=today)
+    prompt_template = settings.system_prompt_template
+
+    candidates: list[Path] = []
+    try:
+        vp = settings.vault_path
+        if vp:
+            candidates.append(vp / "prompt.md")
+            candidates.append(vp / ".obsidian_bot_prompt.md")
+    except ValueError:
+        pass
+    candidates.append(Path("prompt.md"))
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            try:
+                prompt_template = candidate.read_text(encoding="utf-8")
+                break
+            except Exception:
+                continue
+
+    prompt = prompt_template.format(today=today)
     notes_section = render_vault_index_for_prompt(vault_index, settings)
     return f"{prompt}\n\n{notes_section}"
 
@@ -173,8 +195,36 @@ async def prepare_user_message(text: str, settings: Settings) -> tuple[str, str 
     return prompt, primary_url
 
 
+def _fetch_url_fallback(url: str) -> str | None:
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+            }
+        )
+        with urllib.request.urlopen(req, timeout=15) as response:
+            html_bytes = response.read()
+            for encoding in ("utf-8", "cp1251", "latin-1"):
+                try:
+                    return html_bytes.decode(encoding)
+                except UnicodeDecodeError:
+                    continue
+            return html_bytes.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+
 async def extract_article_text(url: str) -> str:
     downloaded = await asyncio.to_thread(trafilatura.fetch_url, url)
+    if not downloaded:
+        downloaded = await asyncio.to_thread(_fetch_url_fallback, url)
+
     if not downloaded:
         raise ArticleExtractionError("Failed to download the page from the provided URL.")
 
@@ -286,8 +336,11 @@ def _extract_fenced_note_candidate(text: str) -> str | None:
 def make_safe_filename(title: str) -> str:
     normalized = unicodedata.normalize("NFKC", title).strip()
     normalized = re.sub(r"[\x00-\x1f<>:\"/\\|?*]", "", normalized)
-    normalized = re.sub(r"\s+", "_", normalized)
-    normalized = normalized.strip("._")
+    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = normalized.strip("._ ")
+
+    if len(normalized) > 100:
+        normalized = normalized[:100].rstrip()
 
     if not normalized:
         normalized = f"note_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -346,6 +399,9 @@ def extract_attachment_text(
     if suffix == ".docx":
         return _extract_docx_text(content)
 
+    if suffix == ".pdf":
+        return _extract_pdf_text(content)
+
     decoded = _decode_attachment_bytes(content)
     if not decoded:
         return None
@@ -401,6 +457,20 @@ def _extract_docx_text(content: bytes) -> str | None:
             paragraphs.append("".join(parts))
 
     return "\n".join(paragraphs).strip() or None
+
+
+def _extract_pdf_text(content: bytes) -> str | None:
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(content))
+        text_parts: list[str] = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                text_parts.append(text)
+        return "\n".join(text_parts).strip() or None
+    except Exception:
+        return None
 
 
 def _render_csv(decoded: str) -> str:
@@ -500,6 +570,16 @@ def normalize_note_name(value: str) -> str:
     return normalized
 
 
+@dataclass(slots=True)
+class CachedNote:
+    mtime: float
+    size: int
+    note: VaultNote
+
+
+_VAULT_CACHE: dict[Path, CachedNote] = {}
+
+
 async def scan_obsidian_vault(vault_path: Path) -> VaultIndex:
     return await asyncio.to_thread(_scan_obsidian_vault, vault_path)
 
@@ -511,17 +591,30 @@ def _scan_obsidian_vault(vault_path: Path) -> VaultIndex:
     notes: list[VaultNote] = []
     tag_set: set[str] = set()
 
+    new_cache: dict[Path, CachedNote] = {}
+
     for file_path in sorted(vault_path.rglob("*.md"), key=lambda path: str(path).casefold()):
         try:
-            content = file_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            content = file_path.read_text(encoding="utf-8", errors="ignore")
+            stat = file_path.stat()
+            mtime = stat.st_mtime
+            size = stat.st_size
+        except OSError:
+            continue
 
-        tags = parse_tags_from_frontmatter(extract_frontmatter(content))
-        heading = extract_heading(content)
-        relative_path = file_path.relative_to(vault_path).as_posix()
-        notes.append(
-            VaultNote(
+        cached = _VAULT_CACHE.get(file_path)
+        if cached is not None and cached.mtime == mtime and cached.size == size:
+            note = cached.note
+            new_cache[file_path] = cached
+        else:
+            try:
+                content = file_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+
+            tags = parse_tags_from_frontmatter(extract_frontmatter(content))
+            heading = extract_heading(content)
+            relative_path = file_path.relative_to(vault_path).as_posix()
+            note = VaultNote(
                 link_name=file_path.stem,
                 filename=file_path.name,
                 relative_path=relative_path,
@@ -529,8 +622,13 @@ def _scan_obsidian_vault(vault_path: Path) -> VaultIndex:
                 heading=heading,
                 tags=tags,
             )
-        )
-        tag_set.update(tags)
+            new_cache[file_path] = CachedNote(mtime=mtime, size=size, note=note)
+
+        notes.append(note)
+        tag_set.update(note.tags)
+
+    _VAULT_CACHE.clear()
+    _VAULT_CACHE.update(new_cache)
 
     return VaultIndex(notes=notes, tags=sorted(tag_set, key=str.casefold))
 

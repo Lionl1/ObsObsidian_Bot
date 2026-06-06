@@ -28,6 +28,9 @@ run:
 dev:
 	cd backend && uv run python -X dev main.py
 
+test:
+	cd backend && uv run python -m unittest discover -s tests
+
 docker-config: check-docker-env
 	docker compose --env-file $(ENV_FILE) config
 

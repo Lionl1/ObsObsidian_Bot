@@ -1096,6 +1096,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pypdf"
+version = "4.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f0/65/2ed7c9e1d31d860f096061b3dd2d665f501e09faaa0409a3f0d719d2a16d/pypdf-4.3.1.tar.gz", hash = "sha256:b2f37fe9a3030aa97ca86067a56ba3f9d3565f9a791b305c7355d8392c30d91b", size = 293266, upload-time = "2024-07-21T19:35:20.207Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/60/eccdd92dd4af3e4bea6d6a342f7588c618a15b9bec4b968af581e498bcc4/pypdf-4.3.1-py3-none-any.whl", hash = "sha256:64b31da97eda0771ef22edb1bfecd5deee4b72c3d1736b7df2689805076d6418", size = 295825, upload-time = "2024-07-21T19:35:18.126Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -1255,6 +1264,7 @@ dependencies = [
     { name = "aiogram" },
     { name = "openai" },
     { name = "pydantic-settings" },
+    { name = "pypdf" },
     { name = "trafilatura" },
 ]
 
@@ -1263,6 +1273,7 @@ requires-dist = [
     { name = "aiogram", specifier = ">=3.15.0,<4.0.0" },
     { name = "openai", specifier = ">=1.51.0,<2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.6.0,<3.0.0" },
+    { name = "pypdf", specifier = ">=4.0.0,<5.0.0" },
     { name = "trafilatura", specifier = ">=2.0.0,<3.0.0" },
 ]
 

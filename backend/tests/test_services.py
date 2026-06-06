@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import io
+import tempfile
 import unittest
 import zipfile
-
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch, MagicMock
 
 from services import (
     build_language_instruction,
+    build_system_prompt,
     detect_message_language,
     extract_attachment_text,
     extract_note_from_response,
+    make_safe_filename,
     prepare_user_message,
+    scan_obsidian_vault,
 )
 
 
@@ -120,6 +125,71 @@ class DetectMessageLanguageTests(unittest.TestCase):
         instruction = build_language_instruction("12345 --- 67890")
 
         self.assertIn("If the message language is unclear", instruction)
+
+
+class MakeSafeFilenameTests(unittest.TestCase):
+    def test_keeps_spaces_and_removes_unsafe_chars(self) -> None:
+        filename = make_safe_filename("My Super: Note? Title!")
+        self.assertEqual(filename, "My Super Note Title!.md")
+
+    def test_truncates_long_filename(self) -> None:
+        long_title = "a" * 150
+        filename = make_safe_filename(long_title)
+        self.assertEqual(len(filename), 103)  # 100 characters + .md
+        self.assertEqual(filename, "a" * 100 + ".md")
+
+
+class VaultScanningCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_uses_cache_for_unchanged_files(self) -> None:
+        from services import _VAULT_CACHE
+        _VAULT_CACHE.clear()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            file_path = vault_path / "test_note.md"
+            file_path.write_text("---\ntags: [tag1]\n---\n# Title\ncontent", encoding="utf-8")
+
+            # First scan - should read from disk
+            index1 = await scan_obsidian_vault(vault_path)
+            self.assertEqual(len(index1.notes), 1)
+            self.assertEqual(index1.notes[0].link_name, "test_note")
+
+            # Mock read_text to ensure it's not called again
+            with patch("pathlib.Path.read_text", side_effect=RuntimeError("Should not read file")):
+                index2 = await scan_obsidian_vault(vault_path)
+                self.assertEqual(len(index2.notes), 1)
+                self.assertEqual(index2.notes[0].link_name, "test_note")
+
+
+class SystemPromptOverrideTests(unittest.IsolatedAsyncioTestCase):
+    async def test_loads_prompt_from_vault_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            prompt_file = vault_path / "prompt.md"
+            prompt_file.write_text("Custom prompt template {today}", encoding="utf-8")
+
+            settings = SimpleNamespace(
+                vault_path=vault_path,
+                system_prompt_template="Default prompt {today}",
+                obsidian_prompt_notes_limit=10,
+            )
+
+            prompt = build_system_prompt(settings, None)
+            self.assertIn("Custom prompt template", prompt)
+
+
+class ExtractPdfTextTests(unittest.TestCase):
+    @patch("pypdf.PdfReader")
+    def test_extracts_pdf_attachment_text(self, mock_pdf_reader) -> None:
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "PDF page text content"
+
+        mock_reader_instance = MagicMock()
+        mock_reader_instance.pages = [mock_page]
+        mock_pdf_reader.return_value = mock_reader_instance
+
+        result = extract_attachment_text("doc.pdf", b"fake pdf data", "application/pdf")
+        self.assertEqual(result, "PDF page text content")
 
 
 if __name__ == "__main__":
