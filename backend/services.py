@@ -222,21 +222,33 @@ def _fetch_url_fallback(url: str) -> str | None:
 
 async def extract_article_text(url: str) -> str:
     downloaded = await asyncio.to_thread(trafilatura.fetch_url, url)
-    if not downloaded:
+    extracted = None
+    if downloaded:
+        extracted = await asyncio.to_thread(
+            trafilatura.extract,
+            downloaded,
+            include_links=False,
+            include_images=False,
+            favor_precision=True,
+        )
+
+    if not downloaded or not extracted:
         downloaded = await asyncio.to_thread(_fetch_url_fallback, url)
+        if downloaded:
+            extracted = await asyncio.to_thread(
+                trafilatura.extract,
+                downloaded,
+                include_links=False,
+                include_images=False,
+                favor_precision=True,
+            )
 
-    if not downloaded:
-        raise ArticleExtractionError("Failed to download the page from the provided URL.")
-
-    extracted = await asyncio.to_thread(
-        trafilatura.extract,
-        downloaded,
-        include_links=False,
-        include_images=False,
-        favor_precision=True,
-    )
     if not extracted:
-        raise ArticleExtractionError("Failed to extract article text.")
+        if downloaded:
+            cleaned = _strip_html(downloaded)
+            if cleaned:
+                return cleaned
+        raise ArticleExtractionError("Failed to download or extract the page from the provided URL.")
 
     cleaned = extracted.strip()
     if not cleaned:
