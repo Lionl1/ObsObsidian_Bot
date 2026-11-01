@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from aiogram import Dispatcher, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Document, Message
+from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
 
 from config import Settings
@@ -60,6 +60,36 @@ class ConversationMemory:
         self.storage.pop(user_id, None)
 
 
+async def build_document_context(message: Message, settings: Settings) -> str:
+    document = message.document
+    file_size = document.file_size or 0
+    if file_size > settings.telegram_file_max_size:
+        return (
+            build_attachment_prompt(
+                filename=document.file_name or f"{document.file_unique_id}.bin",
+                mime_type=document.mime_type,
+                text=None,
+                settings=settings,
+            )
+            + "\n\n"
+            + (
+                f"The file was not downloaded because its size ({file_size} bytes) "
+                f"exceeds the limit of {settings.telegram_file_max_size} bytes."
+            )
+        )
+
+    buffer = io.BytesIO()
+    await message.bot.download(document, destination=buffer)
+    payload = buffer.getvalue()
+    extracted_text = extract_attachment_text(document.file_name, payload, document.mime_type)
+    return build_attachment_prompt(
+        filename=document.file_name or f"{document.file_unique_id}.bin",
+        mime_type=document.mime_type,
+        text=extracted_text,
+        settings=settings,
+    )
+
+
 def build_dispatcher(settings: Settings) -> Dispatcher:
     dispatcher = Dispatcher()
     router = Router()
@@ -98,7 +128,7 @@ def build_dispatcher(settings: Settings) -> Dispatcher:
 
     async def build_attachment_context(message: Message) -> str | None:
         if message.document:
-            return await build_document_context(message.document)
+            return await build_document_context(message, settings)
         if message.audio:
             return build_binary_attachment_context(
                 filename=message.audio.file_name or f"{message.audio.file_unique_id}.audio",
@@ -125,34 +155,6 @@ def build_dispatcher(settings: Settings) -> Dispatcher:
             filename=filename,
             mime_type=mime_type or f"telegram/{kind}",
             text=None,
-            settings=settings,
-        )
-
-    async def build_document_context(document: Document) -> str:
-        file_size = document.file_size or 0
-        if file_size > settings.telegram_file_max_size:
-            return (
-                build_attachment_prompt(
-                    filename=document.file_name or f"{document.file_unique_id}.bin",
-                    mime_type=document.mime_type,
-                    text=None,
-                    settings=settings,
-                )
-                + "\n\n"
-                + (
-                    f"The file was not downloaded because its size ({file_size} bytes) "
-                    f"exceeds the limit of {settings.telegram_file_max_size} bytes."
-                )
-            )
-
-        buffer = io.BytesIO()
-        await message.bot.download(document, destination=buffer)
-        payload = buffer.getvalue()
-        extracted_text = extract_attachment_text(document.file_name, payload, document.mime_type)
-        return build_attachment_prompt(
-            filename=document.file_name or f"{document.file_unique_id}.bin",
-            mime_type=document.mime_type,
-            text=extracted_text,
             settings=settings,
         )
 
