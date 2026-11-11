@@ -360,14 +360,40 @@ def make_safe_filename(title: str) -> str:
     return f"{normalized}.md"
 
 
+def _is_hidden(path: Path, vault_path: Path) -> bool:
+    """Inside a dot folder: `.obsidian`, `.trash`, `.git` and the like are not notes."""
+    return any(part.startswith(".") for part in path.relative_to(vault_path).parts)
+
+
+def _resolve_note_path(vault_path: Path, filename: str) -> Path:
+    """Where the note with this name lives: the vault root, or its only copy in a subfolder."""
+    root_path = vault_path / filename
+    if root_path.exists():
+        return root_path
+    wanted = filename.casefold()
+    matches = [
+        path
+        for path in vault_path.rglob("*.md")
+        if path.name.casefold() == wanted and not _is_hidden(path, vault_path)
+    ]
+    # Several notes share the name: the model cannot say which one it meant.
+    return matches[0] if len(matches) == 1 else root_path
+
+
 async def save_note(note: NotePayload, vault_path: Path) -> SaveResult:
     def _write_note() -> SaveResult:
         vault_path.mkdir(parents=True, exist_ok=True)
-        filename = make_safe_filename(note.title)
-        target_path = vault_path / filename
+        target_path = _resolve_note_path(vault_path, make_safe_filename(note.title))
         updated = target_path.exists()
-        target_path.write_text(note.content, encoding="utf-8")
-        return SaveResult(filename=filename, title=note.title, updated=updated)
+        # Write beside the note and rename: a crash mid-write must not leave half a note.
+        tmp_path = target_path.with_name(f".{target_path.name}.tmp")
+        tmp_path.write_text(note.content, encoding="utf-8")
+        tmp_path.replace(target_path)
+        return SaveResult(
+            filename=target_path.relative_to(vault_path).as_posix(),
+            title=note.title,
+            updated=updated,
+        )
 
     return await asyncio.to_thread(_write_note)
 
@@ -606,6 +632,8 @@ def _scan_obsidian_vault(vault_path: Path) -> VaultIndex:
     new_cache: dict[Path, CachedNote] = {}
 
     for file_path in sorted(vault_path.rglob("*.md"), key=lambda path: str(path).casefold()):
+        if _is_hidden(file_path, vault_path):
+            continue
         try:
             stat = file_path.stat()
             mtime = stat.st_mtime
