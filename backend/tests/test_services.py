@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from services import (
+    NotePayload,
     build_language_instruction,
     build_system_prompt,
     detect_message_language,
@@ -16,6 +17,7 @@ from services import (
     extract_note_from_response,
     make_safe_filename,
     prepare_user_message,
+    save_note,
     scan_obsidian_vault,
 )
 
@@ -159,6 +161,65 @@ class VaultScanningCacheTests(unittest.IsolatedAsyncioTestCase):
                 index2 = await scan_obsidian_vault(vault_path)
                 self.assertEqual(len(index2.notes), 1)
                 self.assertEqual(index2.notes[0].link_name, "test_note")
+
+
+class VaultScanningHiddenFoldersTests(unittest.IsolatedAsyncioTestCase):
+    async def test_skips_dot_folders(self) -> None:
+        from services import _VAULT_CACHE
+        _VAULT_CACHE.clear()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            (vault_path / "Projects").mkdir()
+            (vault_path / "Projects" / "Plan.md").write_text("# Plan", encoding="utf-8")
+            for hidden in (".trash", ".obsidian/plugins/some-plugin"):
+                (vault_path / hidden).mkdir(parents=True)
+                (vault_path / hidden / "README.md").write_text("# not a note", encoding="utf-8")
+
+            index = await scan_obsidian_vault(vault_path)
+
+            self.assertEqual([note.relative_path for note in index.notes], ["Projects/Plan.md"])
+
+
+class SaveNoteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_note_goes_to_vault_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+
+            result = await save_note(NotePayload(title="Fresh idea", content="# Fresh idea"), vault_path)
+
+            self.assertEqual((result.filename, result.updated), ("Fresh idea.md", False))
+            self.assertEqual((vault_path / "Fresh idea.md").read_text(encoding="utf-8"), "# Fresh idea")
+            self.assertEqual([path.name for path in vault_path.iterdir()], ["Fresh idea.md"])
+
+    async def test_updates_note_where_it_lives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            (vault_path / "Projects").mkdir()
+            existing = vault_path / "Projects" / "Plan.md"
+            existing.write_text("# Plan\nold", encoding="utf-8")
+
+            result = await save_note(NotePayload(title="Plan", content="# Plan\nnew"), vault_path)
+
+            self.assertEqual((result.filename, result.updated), ("Projects/Plan.md", True))
+            self.assertEqual(existing.read_text(encoding="utf-8"), "# Plan\nnew")
+            self.assertFalse((vault_path / "Plan.md").exists())
+
+    async def test_ambiguous_or_trashed_name_is_saved_to_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            for folder in ("A", "B", ".trash"):
+                (vault_path / folder).mkdir()
+                (vault_path / folder / "Plan.md").write_text(f"# Plan in {folder}", encoding="utf-8")
+            (vault_path / ".trash" / "Gone.md").write_text("# Gone", encoding="utf-8")
+
+            twice = await save_note(NotePayload(title="Plan", content="# Plan"), vault_path)
+            trashed = await save_note(NotePayload(title="Gone", content="# Gone again"), vault_path)
+
+            self.assertEqual((twice.filename, twice.updated), ("Plan.md", False))
+            self.assertEqual((vault_path / "A" / "Plan.md").read_text(encoding="utf-8"), "# Plan in A")
+            self.assertEqual((trashed.filename, trashed.updated), ("Gone.md", False))
+            self.assertEqual((vault_path / ".trash" / "Gone.md").read_text(encoding="utf-8"), "# Gone")
 
 
 class SystemPromptOverrideTests(unittest.IsolatedAsyncioTestCase):
